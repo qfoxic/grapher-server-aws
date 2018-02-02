@@ -3,7 +3,7 @@ from setuptools import setup
 
 setup(
     name='grapher-aws',
-    version='1.0.1',
+    version='1.0.2',
     license='Apache Software License',
     classifiers=[
         'Development Status :: 5 - Production/Stable',
@@ -23,5 +23,5 @@ setup(
     packages=['grapher.aws'],
     install_requires=['boto3==1.4.7', 'grapher-core==1.0.0'],
     url='https://github.com/qfoxic/grapher-server-aws',
-    download_url='https://github.com/qfoxic/grapher-server-aws/archive/1.0.1.tar.gz'
+    download_url='https://github.com/qfoxic/grapher-server-aws/archive/1.0.2.tar.gz'
 )
