@@ -21,7 +21,7 @@ setup(
     author='Volodymyr Paslavskyy',
     author_email='qfoxic@gmail.com',
     packages=['grapher.aws'],
-    install_requires=['boto3==1.4.7', 'grapher-aws==1.0.0'],
+    install_requires=['boto3==1.4.7', 'grapher-core==1.0.0'],
     url='https://github.com/qfoxic/grapher-server-aws',
     download_url='https://github.com/qfoxic/grapher-server-aws/archive/1.0.1.tar.gz'
 )
