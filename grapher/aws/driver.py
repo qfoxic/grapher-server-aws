@@ -9,7 +9,6 @@ from queue import Queue
 
 from grapher.core import driver
 from grapher.core.constants import (UNAUTHORIZED, LINKS_WITH_CYCLE)
-from grapher.core.errors import GraphException
 
 
 REGIONS = (
@@ -17,9 +16,6 @@ REGIONS = (
     'eu-central-1', 'eu-west-2', 'sa-east-1',
     'ap-southeast-1', 'ap-southeast-2', 'ap-northeast-1', 'ap-northeast-2', 'ap-south-1'
 )
-
-# Links should contains tuples (ec2, elb) as keys and a Queue as a value.
-LINKS = defaultdict(Queue)
 
 EC2_TYPE = 'ec2'
 ELB_TYPE = 'elb'
@@ -41,13 +37,23 @@ ITEM_ID_FIELD = 'id'
 ITEM_PID_FIELD = 'pid'
 ITEM_TYPE_FIELD = 'type'
 
+FUTURE_WAIT_TIMEOUT = 500
+
+# Items in an array.
+CHUNK_SIZE = 500
+
 # INFO: general format for commands:
 #       data types=ec2
 #       data types=ec2,elb
 
+# driver should return empty list: [], list with results: [{}, {}], dictionary with error:
+#  {'error': ERROR_DESCRIPTION}
+
 
 def has_cycles(vertices):
     links = set()
+    if not vertices:
+        return False
     for t in vertices.split(','):
         edge = tuple(sorted(t.split(':')))
         if edge[0] == edge[1]:
@@ -60,15 +66,6 @@ def has_cycles(vertices):
     return False
 
 
-def get_links_queue(id1, id2):
-    return LINKS[tuple([id1, id2])]
-
-
-def clear_links_queue():
-    global LINKS
-    LINKS = defaultdict(Queue)
-
-
 def start_loop(callback):
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=len(REGIONS)
@@ -79,9 +76,9 @@ def start_loop(callback):
         for region in REGIONS
     ]
 
-
 class Fetcher:
-    def __init__(self, keys, flt=None):
+    def __init__(self, keys, links, flt=None):
+        self.links = links
         self.keys = keys
         self.fltr = eval('lambda i: {}'.format(flt)) if flt else None
 
@@ -96,6 +93,9 @@ class Fetcher:
         res = loop.run_until_complete(partial(self._fetch, region)())
         print('Region: {}, type - {}, time {}'.format(region, self.type, timer() - cur))
         return res
+
+    def _get_links_queue(self, id1, id2):
+        return self.links[tuple([id1, id2])]
 
     def _format_link(self, id, pid):
         return {ITEM_TYPE_FIELD: LINK_TYPE, ITEM_ID_FIELD: id, ITEM_PID_FIELD: pid}
@@ -120,7 +120,7 @@ class Fetcher:
             return [i async for i in self._extract_data(response, region)]
         except botocore.exceptions.ClientError as err:
             print(err)
-            raise GraphException(UNAUTHORIZED)
+            return {'error': UNAUTHORIZED}
 
 
 class EC2Fetcher(Fetcher):
@@ -128,10 +128,10 @@ class EC2Fetcher(Fetcher):
     field_id_name = EC2_ID_NAME
 
     async def _extract_data(self, response, region):
-        links_queue = get_links_queue(EC2_TYPE, SG_TYPE)
-        sg_links = get_links_queue(SG_TYPE, EC2_TYPE)
-        region_links = get_links_queue(REGION_TYPE, EC2_TYPE)
-        vpc_links = get_links_queue(VPC_TYPE, EC2_TYPE)
+        links_queue = self._get_links_queue(EC2_TYPE, SG_TYPE)
+        sg_links = self._get_links_queue(SG_TYPE, EC2_TYPE)
+        region_links = self._get_links_queue(REGION_TYPE, EC2_TYPE)
+        vpc_links = self._get_links_queue(VPC_TYPE, EC2_TYPE)
 
         for rec in response['Reservations']:
             for instance in rec['Instances']:
@@ -169,7 +169,7 @@ class ASGFetcher(Fetcher):
     field_id_name = ASG_ID_NAME
 
     async def _extract_data(self, response, region):
-        links_queue = get_links_queue(EC2_TYPE, ASG_TYPE)
+        links_queue = self._get_links_queue(EC2_TYPE, ASG_TYPE)
 
         for rec in response['AutoScalingGroups']:
             for i in rec['Instances']:
@@ -186,11 +186,11 @@ class ELBFetcher(Fetcher):
     field_id_name = ELB_ID_NAME
 
     async def _extract_data(self, response, region):
-        elb_queue = get_links_queue(ELB_TYPE, EC2_TYPE)
-        ec2_queue = get_links_queue(EC2_TYPE, ELB_TYPE)
-        sg_queue = get_links_queue(ELB_TYPE, SG_TYPE)
-        elb_sg_queue = get_links_queue(SG_TYPE, ELB_TYPE)
-        region_links = get_links_queue(REGION_TYPE, ELB_TYPE)
+        elb_queue = self._get_links_queue(ELB_TYPE, EC2_TYPE)
+        ec2_queue = self._get_links_queue(EC2_TYPE, ELB_TYPE)
+        sg_queue = self._get_links_queue(ELB_TYPE, SG_TYPE)
+        elb_sg_queue = self._get_links_queue(SG_TYPE, ELB_TYPE)
+        region_links = self._get_links_queue(REGION_TYPE, ELB_TYPE)
 
         for instance in response['LoadBalancerDescriptions']:
             region_links.put(self._format_link(
@@ -222,7 +222,7 @@ class TAGSFetcher(Fetcher):
             key, value = tag['Key'], tag['Value']
             if key.isalpha():
                 queue_type = 'tags-{}'.format(key.lower().strip())
-                queue = get_links_queue(EC2_TYPE, queue_type)
+                queue = self._get_links_queue(EC2_TYPE, queue_type)
                 queue.put(self._format_link(tag['ResourceId'], value))
             result.add((key, value))
 
@@ -241,7 +241,7 @@ class SGFetcher(Fetcher):
     field_id_name = SG_ID_NAME
 
     async def _extract_data(self, response, region):
-        region_links = get_links_queue(REGION_TYPE, SG_TYPE)
+        region_links = self._get_links_queue(REGION_TYPE, SG_TYPE)
 
         for sg in response['SecurityGroups']:
             region_links.put(self._format_link(
@@ -259,7 +259,7 @@ class VPCFetcher(Fetcher):
     field_id_name = VPC_ID_NAME
 
     async def _extract_data(self, response, region):
-        region_links = get_links_queue(REGION_TYPE, VPC_TYPE)
+        region_links = self._get_links_queue(REGION_TYPE, VPC_TYPE)
 
         for vpc in response['Vpcs']:
             region_links.put(self._format_link(
@@ -272,34 +272,34 @@ class VPCFetcher(Fetcher):
         return session.client(EC2_TYPE, region_name=region).describe_vpcs()
 
 
-def ec2(keys, fltr):
+def ec2(keys, links, fltr):
     """Returns generator with a task results as soon as completed."""
-    return start_loop(EC2Fetcher(keys, fltr).fetch)
+    return start_loop(EC2Fetcher(keys, links, fltr).fetch)
 
 
-def region(keys, fltr):
+def region(keys, links, fltr):
     """Returns generator with a task results as soon as completed."""
-    return start_loop(RegionFetcher(keys, fltr).fetch)
+    return start_loop(RegionFetcher(keys, links, fltr).fetch)
 
 
-def elb(keys, fltr):
-    return start_loop(ELBFetcher(keys, fltr).fetch)
+def elb(keys, links, fltr):
+    return start_loop(ELBFetcher(keys, links, fltr).fetch)
 
 
-def tags(keys, fltr):
-    return start_loop(TAGSFetcher(keys, fltr).fetch)
+def tags(keys, links, fltr):
+    return start_loop(TAGSFetcher(keys, links, fltr).fetch)
 
 
-def sg(keys, fltr):
-    return start_loop(SGFetcher(keys, fltr).fetch)
+def sg(keys, links, fltr):
+    return start_loop(SGFetcher(keys, links, fltr).fetch)
 
 
-def asg(keys, fltr):
-    return start_loop(ASGFetcher(keys, fltr).fetch)
+def asg(keys, links, fltr):
+    return start_loop(ASGFetcher(keys, links, fltr).fetch)
 
 
-def vpc(keys, fltr):
-    return start_loop(VPCFetcher(keys, fltr).fetch)
+def vpc(keys, links, fltr):
+    return start_loop(VPCFetcher(keys, links, fltr).fetch)
 
 
 COLLECTORS = {
@@ -315,26 +315,11 @@ COLLECTORS = {
 
 class AWSDriver(driver.AbstractDriver):
 
-    def _links(self, types):
-        """
-        Display links between different objects.
-
-        :param types: string in a following format: a:b,a:c 
-        :return: generator 
-        """
-        if has_cycles(types):
-            raise GraphException(LINKS_WITH_CYCLE)
-        aws_types = types.split(',')
-        for aws_type in aws_types:
-            type1, type2 = aws_type.split(':')
-            data = get_links_queue(type1, type2)
-            while not data.empty():
-                yield data.get()
-
     def auth(self, key, secret):
         self.keys = key, secret
+        self.collected_links = defaultdict(Queue)
 
-    def data(self, **kwargs):
+    async def data(self, **kwargs):
         """
         This method should return list of dicts.
         
@@ -344,29 +329,39 @@ class AWSDriver(driver.AbstractDriver):
         :return: generator
         """
         types = kwargs['types']
-        links = kwargs.get('links')
+        link_types = kwargs.get('links')
+        self.collected_links = defaultdict(Queue)
+
+        if has_cycles(link_types):
+            yield {'error': LINKS_WITH_CYCLE}
+            return
+
         filters = {
             key: val for key, val in kwargs.items() if key in COLLECTORS
         }
         aws_types = types.split(',')
-        loop = asyncio.get_event_loop()
-        futures = [
-            COLLECTORS[aws_type](
-                self.keys, filters.get(aws_type)) for aws_type in aws_types if aws_type in COLLECTORS
-        ]
-
-        clear_links_queue()
+        futures = (
+            COLLECTORS[aws_type](self.keys, self.collected_links, filters.get(aws_type)) for aws_type in aws_types
+                if aws_type in COLLECTORS
+        )
 
         for future in asyncio.as_completed(itertools.chain.from_iterable(futures)):
-            type_data_list = loop.run_until_complete(future)
-            for data_list in type_data_list:
-                yield data_list
+            result = await asyncio.wait_for(future, timeout=FUTURE_WAIT_TIMEOUT)
+            for i in range(0, len(result), CHUNK_SIZE):
+                yield result[i:i + CHUNK_SIZE]
 
-        if links:
-            yield from self._links(links)
+        if link_types:
+            links = link_types.split(',')
+            for link in links:
+                type1, type2 = link.split(':')
+                data = self.collected_links[tuple([type1, type2])]
+                resp = []
+                while not data.empty():
+                    resp.append(data.get())
+                yield resp
 
-    def info(self):
+    async def info(self):
         yield {
             'driver': 'aws',
-            'available_links': ', '.join(['{}:{}'.format(t1, t2) for t1, t2 in LINKS])
+            'available_links': ', '.join(['{}:{}'.format(t1, t2) for t1, t2 in self.collected_links])
         }
