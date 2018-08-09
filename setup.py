@@ -3,7 +3,7 @@ from setuptools import setup
 
 setup(
     name='grapher-aws',
-    version='2.0.0',
+    version='2.0.1',
     license='Apache Software License',
     classifiers=[
         'Development Status :: 5 - Production/Stable',
@@ -13,15 +13,16 @@ setup(
         'Topic :: System :: Monitoring',
         'Topic :: System :: Systems Administration',
         'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
     ],
     keywords=['data', 'visualization', 'monitoring', 'aws', 'graphs'],
-    python_requires='~=3.6',
+    python_requires='~=3.7',
     description='Grapher driver which cover AWS infrastructure',
     entry_points={'grapher.drivers': 'aws = grapher.aws.driver:AWSDriver'},
     author='Volodymyr Paslavskyy',
     author_email='qfoxic@gmail.com',
     packages=['grapher.aws'],
-    install_requires=['boto3==1.4.7', 'grapher-core==2.0.0'],
+    install_requires=['boto3==1.4.7', 'grapher-core==2.0.1'],
     url='https://github.com/qfoxic/grapher-server-aws',
-    download_url='https://github.com/qfoxic/grapher-server-aws/archive/2.0.0.tar.gz'
+    download_url='https://github.com/qfoxic/grapher-server-aws/archive/2.0.1.tar.gz'
 )
