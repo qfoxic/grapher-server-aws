@@ -34,7 +34,8 @@ ASG_ID_NAME = 'AutoScalingGroupName'
 VPC_ID_NAME = 'VpcId'
 
 ITEM_ID_FIELD = 'id'
-ITEM_PID_FIELD = 'pid'
+LINK_PID_FIELD = 'from'
+LINK_ID_FIELD = 'to'
 ITEM_TYPE_FIELD = 'type'
 
 FUTURE_WAIT_TIMEOUT = 500
@@ -98,7 +99,7 @@ class Fetcher:
         return self.links[tuple([id1, id2])]
 
     def _format_link(self, id, pid):
-        return {ITEM_TYPE_FIELD: LINK_TYPE, ITEM_ID_FIELD: id, ITEM_PID_FIELD: pid}
+        return {ITEM_TYPE_FIELD: LINK_TYPE, LINK_ID_FIELD: id, LINK_PID_FIELD: pid}
 
     async def _format(self, instance):
         data = {
@@ -135,17 +136,17 @@ class EC2Fetcher(Fetcher):
 
         for rec in response['Reservations']:
             for instance in rec['Instances']:
-                region_links.put(self._format_link(
+                region_links.append(self._format_link(
                     instance[EC2_ID_NAME], region)
                 )
                 # Stopped instances don't have VPC ID.
                 if instance.get(VPC_ID_NAME):
-                    vpc_links.put(self._format_link(
+                    vpc_links.append(self._format_link(
                         instance[EC2_ID_NAME], instance[VPC_ID_NAME])
                     )
                 for i in instance['SecurityGroups']:
-                    links_queue.put(self._format_link(i[SG_ID_NAME], instance[EC2_ID_NAME]))
-                    sg_links.put(self._format_link(instance[EC2_ID_NAME], i[SG_ID_NAME]))
+                    links_queue.append(self._format_link(i[SG_ID_NAME], instance[EC2_ID_NAME]))
+                    sg_links.append(self._format_link(instance[EC2_ID_NAME], i[SG_ID_NAME]))
 
                 yield await self._format(instance)
 
@@ -173,7 +174,7 @@ class ASGFetcher(Fetcher):
 
         for rec in response['AutoScalingGroups']:
             for i in rec['Instances']:
-                links_queue.put(self._format_link(i[EC2_ID_NAME], rec[ASG_ID_NAME]))
+                links_queue.append(self._format_link(i[EC2_ID_NAME], rec[ASG_ID_NAME]))
 
             yield await self._format(rec)
 
@@ -193,18 +194,18 @@ class ELBFetcher(Fetcher):
         region_links = self._get_links_queue(REGION_TYPE, ELB_TYPE)
 
         for instance in response['LoadBalancerDescriptions']:
-            region_links.put(self._format_link(
+            region_links.append(self._format_link(
                 instance[ELB_ID_NAME], region)
             )
             # Fill ec2 links.
             for i in instance['Instances']:
-                elb_queue.put(self._format_link(i[EC2_ID_NAME], instance[ELB_ID_NAME]))
-                ec2_queue.put(self._format_link(instance[ELB_ID_NAME], i[EC2_ID_NAME]))
+                elb_queue.append(self._format_link(i[EC2_ID_NAME], instance[ELB_ID_NAME]))
+                ec2_queue.append(self._format_link(instance[ELB_ID_NAME], i[EC2_ID_NAME]))
 
             # Fill sg links.
             for i in instance['SecurityGroups']:
-                sg_queue.put(self._format_link(i, instance[ELB_ID_NAME]))
-                elb_sg_queue.put(self._format_link(instance[ELB_ID_NAME], i))
+                sg_queue.append(self._format_link(i, instance[ELB_ID_NAME]))
+                elb_sg_queue.append(self._format_link(instance[ELB_ID_NAME], i))
 
             yield await self._format(instance)
 
@@ -223,7 +224,7 @@ class TAGSFetcher(Fetcher):
             if key.isalpha():
                 queue_type = 'tags-{}'.format(key.lower().strip())
                 queue = self._get_links_queue(EC2_TYPE, queue_type)
-                queue.put(self._format_link(tag['ResourceId'], value))
+                queue.append(self._format_link(tag['ResourceId'], value))
             result.add((key, value))
 
         for key, val in result:
@@ -244,7 +245,7 @@ class SGFetcher(Fetcher):
         region_links = self._get_links_queue(REGION_TYPE, SG_TYPE)
 
         for sg in response['SecurityGroups']:
-            region_links.put(self._format_link(
+            region_links.append(self._format_link(
                 sg[SG_ID_NAME], region)
             )
             yield await self._format(sg)
@@ -262,7 +263,7 @@ class VPCFetcher(Fetcher):
         region_links = self._get_links_queue(REGION_TYPE, VPC_TYPE)
 
         for vpc in response['Vpcs']:
-            region_links.put(self._format_link(
+            region_links.append(self._format_link(
                 vpc[VPC_ID_NAME], region)
             )
 
@@ -317,7 +318,7 @@ class AWSDriver(driver.AbstractDriver):
 
     def auth(self, key, secret):
         self.keys = key, secret
-        self.collected_links = defaultdict(Queue)
+        self.collected_links = defaultdict(list)
 
     async def data(self, **kwargs):
         """
@@ -330,7 +331,7 @@ class AWSDriver(driver.AbstractDriver):
         """
         types = kwargs['types']
         link_types = kwargs.get('links')
-        self.collected_links = defaultdict(Queue)
+        self.collected_links = defaultdict(list)
 
         if has_cycles(link_types):
             yield {'error': LINKS_WITH_CYCLE}
@@ -355,10 +356,9 @@ class AWSDriver(driver.AbstractDriver):
             for link in links:
                 type1, type2 = link.split(':')
                 data = self.collected_links[tuple([type1, type2])]
-                resp = []
-                while not data.empty():
-                    resp.append(data.get())
-                yield resp
+                for i in range(0, len(data), CHUNK_SIZE):
+                    yield data[i:i + CHUNK_SIZE]
+                self.collected_links[tuple([type1, type2])] = []
 
     async def info(self):
         yield {
