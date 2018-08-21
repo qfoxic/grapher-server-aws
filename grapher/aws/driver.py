@@ -5,7 +5,6 @@ import concurrent
 import itertools
 from collections import defaultdict
 from functools import partial
-from queue import Queue
 
 from grapher.core import driver
 from grapher.core.constants import (UNAUTHORIZED, LINKS_WITH_CYCLE)
@@ -33,10 +32,10 @@ SG_ID_NAME = 'GroupId'
 ASG_ID_NAME = 'AutoScalingGroupName'
 VPC_ID_NAME = 'VpcId'
 
-ITEM_ID_FIELD = 'id'
+ITEM_ID_FIELD = 'key'
 LINK_PID_FIELD = 'from'
 LINK_ID_FIELD = 'to'
-ITEM_TYPE_FIELD = 'type'
+ITEM_TYPE_FIELD = 'category'
 
 FUTURE_WAIT_TIMEOUT = 500
 
@@ -76,6 +75,7 @@ def start_loop(callback):
         loop.run_in_executor(executor, partial(callback, region))
         for region in REGIONS
     ]
+
 
 class Fetcher:
     def __init__(self, keys, links, flt=None):
@@ -214,7 +214,6 @@ class ELBFetcher(Fetcher):
 
 
 class TAGSFetcher(Fetcher):
-    """This fetcher extracts only links built for EC2 instances."""
     type = TAGS_TYPE
 
     async def _extract_data(self, response, region):
@@ -237,7 +236,6 @@ class TAGSFetcher(Fetcher):
 
 
 class SGFetcher(Fetcher):
-    """This fetcher extracts only links built for EC2 instances."""
     type = SG_TYPE
     field_id_name = SG_ID_NAME
 
@@ -255,7 +253,6 @@ class SGFetcher(Fetcher):
 
 
 class VPCFetcher(Fetcher):
-    """This fetcher extracts only links built for EC2 instances."""
     type = VPC_TYPE
     field_id_name = VPC_ID_NAME
 
@@ -334,7 +331,7 @@ class AWSDriver(driver.AbstractDriver):
         self.collected_links = defaultdict(list)
 
         if has_cycles(link_types):
-            yield {'error': LINKS_WITH_CYCLE}
+            yield [{'error': LINKS_WITH_CYCLE}]
             return
 
         filters = {
@@ -361,7 +358,7 @@ class AWSDriver(driver.AbstractDriver):
                 self.collected_links[tuple([type1, type2])] = []
 
     async def info(self):
-        yield {
+        yield [{
             'driver': 'aws',
             'available_links': ', '.join(['{}:{}'.format(t1, t2) for t1, t2 in self.collected_links])
-        }
+        }]
